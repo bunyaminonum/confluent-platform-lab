@@ -885,6 +885,13 @@ Deliberately not included:
   plaintext in the `.properties` files. See **[`secrets/`](secrets/)**:
   - [`secrets/file-configprovider/`](secrets/file-configprovider/) — dependency-free, file-based
   - [`secrets/cyberark-conjur/`](secrets/cyberark-conjur/) — enterprise vault integration
+- **Metrics and dashboards** — JMX exporters are off by default (`jmxexporter_enabled: false`)
+  and the observing stack is a separate container profile, not part of the
+  Ansible install. Two docs, two tools:
+  - [`monitoring/README.md`](monitoring/README.md) — cp-ansible side: attaching the exporter
+    agent to each JVM, port layout, the SELinux caveat above
+  - [`compose/README.md`](compose/README.md) — container side: `podman-compose --profile
+    monitoring up -d` (Prometheus + Grafana)
 - **Observers / Multi-Region Clusters** (`confluent.placement.constraints`,
   `broker.rack`). cp-ansible has no variable for `broker.rack`; supply it
   through `kafka_broker_custom_properties`.
