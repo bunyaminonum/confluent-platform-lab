@@ -1,0 +1,14 @@
+# Drop dashboard JSON files into grafana/dashboards/ and they are loaded
+# automatically on start. Confluent publishes a community Grafana dashboard
+# set for the JMX exporter metrics; none are bundled here to keep the repo
+# free of third-party content.
+apiVersion: 1
+providers:
+  - name: default
+    orgId: 1
+    folder: ''
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    options:
+      path: /var/lib/grafana/dashboards

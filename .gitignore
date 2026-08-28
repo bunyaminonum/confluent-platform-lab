@@ -1,0 +1,32 @@
+# Turkish working copies of the docs — kept in sync locally, not shipped
+/tr/
+
+# Secrets — never commit
+ansible/vault.yml
+.vault_pass*
+compose/.env
+compose/tls/
+*api*key*
+
+# PKI — private keys and keytabs
+pki/ca/ca.key
+pki/ca/*.srl
+pki/certs/*
+!pki/certs/.gitkeep
+pki/keytabs/*
+!pki/keytabs/.gitkeep
+
+# Air-gap package repository (large binaries + generated metadata)
+packages/confluent/*
+packages/os/*
+!packages/*/.gitkeep
+
+# Generated LDAP password output
+ldap/generated-passwords.txt
+
+# Kerberos working files
+*.keytab
+
+# Grafana dashboard JSON drop-in (bring your own)
+compose/grafana/dashboards/*
+!compose/grafana/dashboards/.gitkeep

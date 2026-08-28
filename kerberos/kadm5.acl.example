@@ -1,0 +1,3 @@
+# /var/kerberos/krb5kdc/kadm5.acl
+# Grants the admin/admin principal full rights over the realm.
+*/admin@LAB.LOCAL	*

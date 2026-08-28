@@ -1,0 +1,49 @@
+# Scrapes the JMX exporters attached to the Confluent components running on
+# the VMs. Enable those exporters first — see ../../monitoring/README.md.
+#
+# The ports below must match the *_jmxexporter_port values in
+# ../../ansible/hosts.yml. They deliberately avoid cp-ansible's defaults,
+# because the broker default (8080) collides with the air-gap package
+# repository this repo runs on the infra node.
+
+global:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+  external_labels:
+    cluster: cp-lab
+
+scrape_configs:
+  - job_name: kafka-controller
+    static_configs:
+      - targets: ['cp-node1:7071', 'cp-node2:7071', 'cp-node3:7071']
+        labels: {component: controller}
+
+  - job_name: kafka-broker
+    static_configs:
+      - targets: ['cp-node1:7072', 'cp-node2:7072', 'cp-node3:7072']
+        labels: {component: broker}
+
+  - job_name: schema-registry
+    static_configs:
+      - targets: ['cp-node1:7073', 'cp-node2:7073', 'cp-node3:7073']
+        labels: {component: schema-registry}
+
+  - job_name: kafka-connect
+    static_configs:
+      - targets: ['cp-node1:7074', 'cp-node2:7074', 'cp-node3:7074']
+        labels: {component: kafka-connect}
+
+  - job_name: kafka-rest
+    static_configs:
+      - targets: ['cp-node1:7075', 'cp-node2:7075', 'cp-node3:7075']
+        labels: {component: rest-proxy}
+
+  # Host-level metrics. Node Exporter is NOT installed by cp-ansible or by
+  # this compose stack — install it on the VMs separately if you want these.
+  # - job_name: node
+  #   static_configs:
+  #     - targets: ['cp-node1:9100', 'cp-node2:9100', 'cp-node3:9100']
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']

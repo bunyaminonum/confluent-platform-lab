@@ -1,0 +1,154 @@
+# =============================================================================
+# Supporting services for the Confluent Platform lab.
+#
+# SCOPE: these containers are the services the cluster DEPENDS ON or that
+# OBSERVE it — directory, secrets vault, metrics. Confluent Platform itself
+# is NOT here: brokers, controllers, Schema Registry, Connect, REST Proxy and
+# Control Center are deployed onto VMs with Ansible (see ../README.md).
+# Do not add Confluent components to this file.
+#
+# Everything is grouped into profiles so you only start what you need:
+#
+#   ldap        Test OpenLDAP directory              (required for RBAC)
+#   conjur      CyberArk Conjur secrets vault        (optional, see ../secrets/)
+#   monitoring  Prometheus + Grafana                 (optional, see ../monitoring/)
+#
+# Usage:
+#   cp .env.example .env          # then fill it in
+#   podman-compose --profile ldap up -d
+#   podman-compose --profile ldap --profile monitoring up -d
+#   podman-compose --profile ldap --profile conjur --profile monitoring up -d
+#
+# docker compose works identically; substitute the command.
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Directory — backs RBAC/MDS. Required for the base installation.
+  # ---------------------------------------------------------------------------
+  openldap:
+    image: docker.io/osixia/openldap:1.5.0
+    container_name: openldap
+    profiles: [ldap]
+    restart: always
+    ports:
+      - "1389:389"
+      - "1636:636"
+    environment:
+      LDAP_ORGANISATION: "${LDAP_ORGANISATION:-Confluent Lab}"
+      LDAP_DOMAIN: "${LDAP_DOMAIN:-lab.local}"
+      LDAP_ADMIN_PASSWORD: "${LDAP_ADMIN_PASSWORD:?set LDAP_ADMIN_PASSWORD in .env}"
+    volumes:
+      - openldap-data:/var/lib/ldap
+      - openldap-config:/etc/ldap/slapd.d
+    networks: [lab-net]
+
+  # ---------------------------------------------------------------------------
+  # CyberArk Conjur — optional secrets vault.
+  #
+  # WARNING: conjur-database has no persistent volume by design in the
+  # upstream quickstart. A named volume is attached below so that a normal
+  # `down` does not wipe every secret — but `down -v` still will.
+  # ---------------------------------------------------------------------------
+  conjur-database:
+    image: docker.io/library/postgres:15
+    container_name: conjur-database
+    profiles: [conjur]
+    restart: always
+    environment:
+      POSTGRES_PASSWORD: "${CONJUR_DB_PASSWORD:?set CONJUR_DB_PASSWORD in .env}"
+    volumes:
+      - conjur-db-data:/var/lib/postgresql/data
+    networks: [lab-net]
+
+  conjur-server:
+    image: docker.io/cyberark/conjur
+    container_name: conjur-server
+    profiles: [conjur]
+    restart: always
+    command: server
+    environment:
+      DATABASE_URL: "postgres://postgres:${CONJUR_DB_PASSWORD}@conjur-database/postgres"
+      CONJUR_DATA_KEY: "${CONJUR_DATA_KEY:?set CONJUR_DATA_KEY in .env}"
+    depends_on: [conjur-database]
+    networks: [lab-net]
+
+  conjur-proxy:
+    image: docker.io/library/nginx:latest
+    container_name: conjur-proxy
+    profiles: [conjur]
+    restart: always
+    ports:
+      - "8443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro,Z
+      - ./tls/conjur.crt:/etc/nginx/tls/conjur.crt:ro,Z
+      - ./tls/conjur.key:/etc/nginx/tls/conjur.key:ro,Z
+    depends_on: [conjur-server]
+    networks: [lab-net]
+
+  conjur-client:
+    image: docker.io/cyberark/conjur-cli:9
+    container_name: conjur-client
+    profiles: [conjur]
+    restart: always
+    entrypoint: ["sleep"]
+    command: ["infinity"]
+    networks: [lab-net]
+
+  # ---------------------------------------------------------------------------
+  # Monitoring — scrapes the JMX exporters running on the Confluent VMs.
+  #
+  # This is NOT the Prometheus that ships inside Control Center. That one is
+  # push-based (OTLP), covers only brokers and controllers, and exists solely
+  # to feed C3's own dashboards. This one scrapes every component. The two
+  # coexist. See ../monitoring/README.md.
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: docker.io/prom/prometheus:latest
+    container_name: prometheus
+    profiles: [monitoring]
+    restart: always
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro,Z
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+      - "--web.enable-lifecycle"
+    extra_hosts:
+      - "${CP_NODE1_NAME:-cp-node1}:${CP_NODE1_IP:-127.0.0.1}"
+      - "${CP_NODE2_NAME:-cp-node2}:${CP_NODE2_IP:-127.0.0.1}"
+      - "${CP_NODE3_NAME:-cp-node3}:${CP_NODE3_IP:-127.0.0.1}"
+    networks: [lab-net]
+
+  grafana:
+    image: docker.io/grafana/grafana:latest
+    container_name: grafana
+    profiles: [monitoring]
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro,Z
+      - grafana-data:/var/lib/grafana
+    depends_on: [prometheus]
+    networks: [lab-net]
+
+networks:
+  lab-net:
+    driver: bridge
+
+volumes:
+  openldap-data:
+  openldap-config:
+  conjur-db-data:
+  prometheus-data:
+  grafana-data:

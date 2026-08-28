@@ -1,0 +1,19 @@
+# /var/kerberos/krb5kdc/kdc.conf
+# Replace LAB.LOCAL with your own cp_realm value.
+#
+# The enctype list must be COMPATIBLE with kerberos.permitted_enctypes in
+# hosts.yml; a mismatch fails the handshake with "no matching key".
+
+[kdcdefaults]
+ kdc_ports = 88
+ kdc_tcp_ports = 88
+
+[realms]
+ LAB.LOCAL = {
+  master_key_type = aes256-cts-hmac-sha384-192
+  acl_file = /var/kerberos/krb5kdc/kadm5.acl
+  dict_file = /usr/share/dict/words
+  admin_keytab = /var/kerberos/krb5kdc/kadm5.keytab
+  supported_enctypes = aes256-cts-hmac-sha384-192:normal aes128-cts-hmac-sha256-128:normal
+  default_principal_flags = +preauth
+ }

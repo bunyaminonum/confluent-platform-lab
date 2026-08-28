@@ -1,0 +1,80 @@
+# Directory skeleton, service accounts and a sample user/group.
+# Replace dc=lab,dc=local with your own cp_ldap_base.
+#
+# Passwords are intentionally left empty. Generate and assign them with
+# set-passwords.sh (README step 7).
+
+dn: ou=users,dc=lab,dc=local
+objectClass: organizationalUnit
+ou: users
+
+dn: ou=groups,dc=lab,dc=local
+objectClass: organizationalUnit
+ou: groups
+
+# --- MDS bootstrap superuser ---
+# Must match mds_super_user in hosts.yml.
+dn: uid=mds,ou=users,dc=lab,dc=local
+objectClass: inetOrgPerson
+uid: mds
+cn: MDS Bootstrap Admin
+sn: Admin
+userPassword:
+
+# --- Account MDS uses to query the directory ---
+# This is NOT a Kafka identity and receives no RBAC role. Its only privilege
+# is READING the user/group tree.
+dn: cn=ldap-bind-user,dc=lab,dc=local
+objectClass: inetOrgPerson
+cn: ldap-bind-user
+sn: BindAccount
+userPassword:
+
+# --- Component service accounts ---
+dn: uid=svc-kafka-broker,ou=users,dc=lab,dc=local
+objectClass: inetOrgPerson
+uid: svc-kafka-broker
+cn: Kafka Broker Service Account
+sn: ServiceAccount
+userPassword:
+
+dn: uid=svc-kafka-schemaregistry,ou=users,dc=lab,dc=local
+objectClass: inetOrgPerson
+uid: svc-kafka-schemaregistry
+cn: Schema Registry Service Account
+sn: ServiceAccount
+userPassword:
+
+dn: uid=svc-kafka-connect,ou=users,dc=lab,dc=local
+objectClass: inetOrgPerson
+uid: svc-kafka-connect
+cn: Kafka Connect Service Account
+sn: ServiceAccount
+userPassword:
+
+dn: uid=svc-kafka-proxy,ou=users,dc=lab,dc=local
+objectClass: inetOrgPerson
+uid: svc-kafka-proxy
+cn: REST Proxy Service Account
+sn: ServiceAccount
+userPassword:
+
+dn: uid=svc-kafka-controlcenter,ou=users,dc=lab,dc=local
+objectClass: inetOrgPerson
+uid: svc-kafka-controlcenter
+cn: Control Center Service Account
+sn: ServiceAccount
+userPassword:
+
+# --- Sample end user and group (for RBAC testing) ---
+dn: uid=developer1,ou=users,dc=lab,dc=local
+objectClass: inetOrgPerson
+uid: developer1
+cn: Developer One
+sn: One
+userPassword:
+
+dn: cn=kafka-developers,ou=groups,dc=lab,dc=local
+objectClass: groupOfNames
+cn: kafka-developers
+member: uid=developer1,ou=users,dc=lab,dc=local
