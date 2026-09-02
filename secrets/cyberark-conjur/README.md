@@ -11,6 +11,11 @@ and the cluster running.
 > validating the reference structure in a simpler setting and then swapping
 > only the provider is easier than testing two variables at once.
 
+> **Paths assume `installation_method: archive`** — configuration lives under
+> `/opt/confluent/etc/` and the bundled JARs under
+> `/opt/confluent/confluent-8.3.0/share/java/`. On an RPM install substitute
+> `/etc/` and `/usr/share/java/`.
+
 ---
 
 ## How it works
@@ -244,7 +249,7 @@ No plaintext passwords should remain:
 
 ```bash
 ansible kafka_broker -i hosts.yml -b -m shell -a \
-  'grep -iE "password=|credentials=" /etc/kafka/server.properties | grep -v "\${cyberark:" | wc -l'
+  'grep -iE "password=|credentials=" /opt/confluent/etc/kafka/server.properties | grep -v "\${cyberark:" | wc -l'
 ```
 
 Services and TLS:
@@ -264,7 +269,7 @@ openssl s_client -connect cp-node1:9092 -CAfile ../pki/ca/ca.crt </dev/null 2>&1
 copied. See the `lib/` subdirectory warning in step 5.
 
 ```bash
-ls /usr/share/java/kafka/ | grep -i cyberark | wc -l    # 0 means not copied
+ls /opt/confluent/confluent-8.3.0/share/java/kafka/ | grep -i cyberark | wc -l    # 0 means not copied
 ```
 
 **`'conjur_host_apikeys' is undefined`** — missing from `vault.yml`. This error

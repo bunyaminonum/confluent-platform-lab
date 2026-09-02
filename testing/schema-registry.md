@@ -4,6 +4,9 @@
 > deployment of this repository, including the actual leader failover. The
 > commands and log patterns below are what that run produced.
 
+> **Paths assume `installation_method: archive`** — configuration lives under
+> `/opt/confluent/etc/`. On an RPM install substitute `/etc/`.
+
 ## Tier 1 — Accessibility
 
 Confirm all three instances are up, share the same leader-election group, and
@@ -12,7 +15,7 @@ enforce RBAC:
 ```bash
 for h in cp-node1 cp-node2 cp-node3; do
   echo "--- $h ---"
-  ssh $h "sudo grep 'schema.registry.group.id' /etc/schema-registry/schema-registry.properties"
+  ssh $h "sudo grep 'schema.registry.group.id' /opt/confluent/etc/schema-registry/schema-registry.properties"
   curl -sk -o /dev/null -w "unauthenticated: HTTP %{http_code}\n" https://$h:8081/subjects
 done
 ```

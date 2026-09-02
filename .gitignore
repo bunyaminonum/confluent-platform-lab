@@ -16,10 +16,8 @@ pki/certs/*
 pki/keytabs/*
 !pki/keytabs/.gitkeep
 
-# Air-gap package repository (large binaries + generated metadata)
-packages/confluent/*
-packages/os/*
-!packages/*/.gitkeep
+# Confluent archives — large binaries, downloaded per Step 4
+packages/*.tar.gz
 
 # Generated LDAP password output
 ldap/generated-passwords.txt

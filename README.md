@@ -1,8 +1,9 @@
 # Confluent Platform 8.3 — Secure KRaft Lab
 
 A reference deployment repository that brings up a fully secured, 3-node
-Confluent Platform cluster with **a single Ansible run**, designed for
-air-gapped environments.
+Confluent Platform cluster with **a single Ansible run**. Software is installed
+from Confluent's archives rather than a package repository, so the target hosts
+need no internet access at all.
 
 | Layer | Technology |
 |---|---|
@@ -11,7 +12,7 @@ air-gapped environments.
 | Server-to-server authentication | Kerberos / SASL_GSSAPI |
 | Client authentication | SASL/OAUTHBEARER (RBAC token) |
 | Authorization | Confluent RBAC + MDS + LDAP |
-| Package distribution | Local yum repository (air-gap) |
+| Software distribution | Confluent archives (tarball), shipped from the control node |
 
 **Components deployed:** KRaft Controller, Kafka Broker, Schema Registry,
 Kafka Connect, REST Proxy, Control Center Next Gen.
@@ -102,7 +103,7 @@ flowchart LR
         N1S["Schema Registry"]
         N1C["Kafka Connect"]
         N1R["REST Proxy"]
-        N1I["KDC · LDAP · package repo"]
+        N1I["KDC · LDAP"]
     end
 
     subgraph N2["cp-node2"]
@@ -151,7 +152,6 @@ Make sure these are reachable between nodes before deploying:
 | 9090 / 9195 / 9196 | Prometheus / Alertmanager (web + gossip) | C3 node |
 | 88 (TCP) | Kerberos KDC | all nodes → `cp_infra_host` |
 | 1389 | LDAP | all nodes → `cp_infra_host` |
-| 8080 | Air-gap package repository | all nodes → `cp_infra_host` (install only) |
 
 ---
 
@@ -185,7 +185,7 @@ Steps 4 through 7 are independent of one another and can be done in parallel:
 ```mermaid
 flowchart LR
     S1["1<br/>OS prep"] --> S2["2<br/>Control node"] --> S3["3<br/>Inventory"]
-    S3 --> S4["4<br/>Package repo"]
+    S3 --> S4["4<br/>Archives"]
     S3 --> S5["5<br/>TLS certs"]
     S3 --> S6["6<br/>Kerberos"]
     S3 --> S7["7<br/>LDAP"]
@@ -243,7 +243,7 @@ The control node may be one of the three cluster nodes (`cp-node1` here).
 **2a. Ansible and Python:**
 
 ```bash
-sudo dnf install -y ansible-core python3.11 python3.11-pip git podman createrepo_c
+sudo dnf install -y ansible-core python3.11 python3.11-pip git podman
 ```
 
 **2b. The cp-ansible collection:**
@@ -330,9 +330,7 @@ cp_infra_host: cp-node1
 
 **3c. Which node runs Control Center** (block 3/3) — at the end of the file.
 
-**3d. `custom-confluent.repo`** — make its hostname match `cp_infra_host`.
-
-**3e. Verify connectivity:**
+**3d. Verify connectivity:**
 
 ```bash
 cd ansible
@@ -341,59 +339,86 @@ ansible all -i hosts.yml -m ping
 
 All three nodes must return `SUCCESS`. Do not proceed otherwise.
 
-### Step 4 — Air-gap package repository
+> **Expected here:** `ERROR! The vault password file ~/.vault_pass was not
+> found`. `ansible.cfg` sets `vault_password_file`, and Ansible loads it for
+> *every* command — even a `ping` that decrypts nothing. The real file is
+> created in Step 8; to run this check now, a throwaway value is enough and
+> gets overwritten later:
+>
+> ```bash
+> echo dummy > ~/.vault_pass && chmod 600 ~/.vault_pass
+> ```
 
-**4a. Download the packages** on a connected machine running the same OS
-version:
+### Step 4 — Confluent Platform archives
+
+This repository installs from **tarballs**, not RPMs
+(`installation_method: archive`). Nothing is installed from yum, and no
+Confluent repository is configured on the nodes. The archives are fetched once
+onto the control node; Ansible copies and expands them on every host.
+
+**4a. Download both archives** into `packages/` on the control node:
+
+```bash
+cd /opt/confluent-platform-lab/packages
+
+curl -LO https://packages.confluent.io/archive/8.3/confluent-8.3.0.tar.gz
+
+curl -LO https://packages.confluent.io/confluent-control-center-next-gen/archive/confluent-control-center-next-gen-2.2.0.tar.gz
+```
+
+> **Two archives, two version numbers.** Control Center Next Gen is packaged
+> separately and versioned independently — **2.2.0** for CP 8.3, not 8.3.0.
+> Downloading only the first file lets the run get all the way to the Control
+> Center role before it fails.
+
+**4b. Verify what you downloaded** — a truncated or HTML-error-page download
+surfaces much later as a confusing extraction failure:
+
+```bash
+ls -lh confluent-*.tar.gz
+```
+
+```bash
+for f in confluent-*.tar.gz; do tar -tzf "$f" >/dev/null && echo "$f OK"; done
+```
+
+Both must print `OK`, and the platform archive should be on the order of a
+gigabyte. If it is a few kilobytes you downloaded an error page.
+
+**4c. Air-gapped?** Run the two `curl` commands on a connected machine and copy
+the files into `packages/` — that is the only step needing internet. The nodes
+themselves never reach out, because `confluent_archive_file_remote: false`
+tells Ansible the tarball lives on the control node.
+
+> Ansible ships the full archive to each host over SSH, so the first deploy
+> moves roughly a gigabyte per node. This is normal and only happens once —
+> the `creates:` guard on the extraction task skips hosts that already have it.
+
+**4d. Prefer RPMs instead?** Set `installation_method: package` in
+`hosts.yml`, drop the four `confluent_archive_*` variables, and let cp-ansible
+configure Confluent's official repository (its default when no custom repo file
+is given). With direct internet access that needs no repository file of your
+own; verify signatures rather than disabling the check:
 
 ```bash
 sudo tee /etc/yum.repos.d/confluent.repo <<'EOF'
 [Confluent]
 name=Confluent repository
 baseurl=https://packages.confluent.io/rpm/8.3
-gpgcheck=0
+gpgcheck=1
+gpgkey=https://packages.confluent.io/rpm/8.3/archive.key
 enabled=1
 EOF
-
-mkdir -p /tmp/pkgs/confluent
-sudo dnf download --downloaddir=/tmp/pkgs/confluent --resolve \
-  confluent-server confluent-schema-registry confluent-kafka-rest \
-  confluent-control-center confluent-cli confluent-rebalancer \
-  confluent-security confluent-common confluent-rest-utils
-
-mkdir -p /tmp/pkgs/os
-sudo dnf download --downloaddir=/tmp/pkgs/os --resolve \
-  java-21-openjdk-headless krb5-workstation
 ```
 
-**4b. Move them into the repository** and generate metadata:
+The two methods are mutually exclusive — pick one. Paths differ between them,
+which matters when you go looking for configuration files:
 
-```bash
-# after copying /tmp/pkgs/* to the control node:
-cd /opt/confluent-platform-lab/packages
-createrepo_c confluent
-createrepo_c os
-```
-
-**4c. Confirm the critical packages are present.** Skipping this check leads to
-an installation that fails halfway through:
-
-```bash
-ls packages/confluent/ | grep -E "confluent-server|schema-registry|kafka-rest|control-center"
-```
-
-All four must appear. `confluent-control-center` is the one most often missed.
-
-**4d. Start the HTTP server** (on `cp_infra_host`):
-
-```bash
-cd /opt/confluent-platform-lab/packages
-nohup python3 -m http.server 8080 > /tmp/pkgrepo.log 2>&1 &
-curl -sI http://cp-node1:8080/confluent/repodata/repomd.xml | head -1   # HTTP/1.0 200 OK
-```
-
-Write a systemd unit if you want this to persist; it can be shut down once the
-installation is complete.
+| | `archive` (this repo) | `package` |
+|---|---|---|
+| Binaries | `/opt/confluent/confluent-8.3.0/bin` | `/usr/bin` |
+| Configuration | `/opt/confluent/etc/kafka/` | `/etc/kafka/` |
+| Plugin path base | expanded archive directory | `/usr/share` |
 
 ### Step 5 — TLS certificates
 
@@ -853,11 +878,12 @@ error_code: 400, "Failed to find any class that implements Connector and which
 name matches FileStreamSourceConnector..."
 ```
 
-The JAR is genuinely on disk (`rpm -ql confluent-kafka | grep filestream`
-shows `/usr/share/filestream-connectors/connect_file_file-project.jar`) — it
-is just not on Connect's `plugin.path`. cp-ansible's default is
-`/usr/share/java/connect_plugins`, which is empty until you install a
-connector into it; the file connectors ship in their own separate directory.
+The JAR is genuinely there — under `share/filestream-connectors/` inside the
+expanded archive (in an RPM install it is `/usr/share/filestream-connectors`,
+owned by `confluent-server`). It is just not on Connect's `plugin.path`.
+cp-ansible's default is `share/java/connect_plugins`, which is empty until you
+install a connector into it; the file connectors ship in their own separate
+directory.
 
 This is deliberate isolation, not an oversight: file connectors can read and
 write arbitrary paths on the host the worker runs on, so packaging them
@@ -913,7 +939,6 @@ Deliberately not included:
 ├── ansible/
 │   ├── hosts.yml                   # single inventory, all components
 │   ├── ansible.cfg
-│   ├── custom-confluent.repo       # air-gap yum repository definition
 │   └── vault.yml.example
 ├── pki/
 │   ├── scripts/gen-root-ca.sh
@@ -925,7 +950,7 @@ Deliberately not included:
 ├── ldap/
 │   ├── bootstrap.ldif
 │   └── set-passwords.sh
-├── packages/                       # air-gap RPM repository (git-ignored)
+├── packages/                       # Confluent archives, .tar.gz (git-ignored)
 ├── compose/                        # supporting containers (LDAP, Conjur, Prometheus, Grafana)
 │   ├── docker-compose.yml          # profiles: ldap | conjur | monitoring
 │   ├── .env.example

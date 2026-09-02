@@ -7,6 +7,11 @@ with Apache Kafka.
 **Prerequisite:** the base installation from the main README must be complete
 and the cluster running.
 
+> **Paths assume `installation_method: archive`** — cp-ansible's generated
+> configuration lives under `/opt/confluent/etc/`. On an RPM install substitute
+> `/etc/`. The `secrets/` directories below are ones you create yourself, so
+> their location is your choice either way.
+
 ---
 
 ## How it works
@@ -142,7 +147,7 @@ No plaintext passwords should remain in the configuration:
 
 ```bash
 ansible kafka_broker -i hosts.yml -b -m shell -a \
-  'grep -iE "password=|credentials=" /etc/kafka/server.properties | grep -v "\${file:" | wc -l'
+  'grep -iE "password=|credentials=" /opt/confluent/etc/kafka/server.properties | grep -v "\${file:" | wc -l'
 ```
 
 Every node must report `0`. Services must be healthy:

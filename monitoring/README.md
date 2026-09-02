@@ -47,11 +47,11 @@ The JMX exporter ports are set **explicitly** in
 | REST Proxy | 7075 | 8075 |
 
 > **Why the broker port is not left at its default.** cp-ansible defaults the
-> broker exporter to **8080** — the same port this repository uses for the
-> air-gap package repository on `cp_infra_host`. On that node the exporter
-> cannot bind, and since the agent is loaded inside the broker JVM, the
-> **broker itself** fails to start. The failure surfaces as a broker startup
-> error with no obvious connection to monitoring.
+> broker exporter to **8080** — one of the most commonly occupied ports on a
+> shared host. If anything already holds it, the exporter cannot bind, and
+> since the agent is loaded inside the broker JVM, the **broker itself** fails
+> to start. The failure surfaces as a broker startup error with no obvious
+> connection to monitoring.
 >
 > The 707x block avoids that collision and keeps every exporter in one
 > predictable range. If you change it, change
