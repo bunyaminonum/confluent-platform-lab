@@ -292,8 +292,42 @@ ssh-keygen -t ed25519 -f ~/.ssh/cp-node2.key -N ''
 ssh-keygen -t ed25519 -f ~/.ssh/cp-node3.key -N ''
 ssh-copy-id -i ~/.ssh/cp-node2.key.pub cloud-user@10.0.0.2
 ssh-copy-id -i ~/.ssh/cp-node3.key.pub cloud-user@10.0.0.3
-# verify (must not prompt for a password):
-ssh -i ~/.ssh/cp-node2.key cloud-user@10.0.0.2 'hostname'
+```
+
+If your provider pre-installed its own keys instead, skip the two `ssh-keygen`
+and `ssh-copy-id` lines and use the paths you were given below.
+
+**2f. Map the hosts to their keys.** The rest of this README and everything
+under [`testing/`](testing/) calls `ssh cp-node2 '...'` with no `-i` flag.
+Without an SSH client config that resolves to the wrong (default) key and fails
+with `Permission denied (publickey)`:
+
+```bash
+cat > ~/.ssh/config <<'EOF'
+Host cp-node1
+    HostName 10.0.0.1
+    User cloud-user
+    IdentityFile ~/.ssh/cp-node1.key
+
+Host cp-node2
+    HostName 10.0.0.2
+    User cloud-user
+    IdentityFile ~/.ssh/cp-node2.key
+
+Host cp-node3
+    HostName 10.0.0.3
+    User cloud-user
+    IdentityFile ~/.ssh/cp-node3.key
+EOF
+chmod 600 ~/.ssh/config
+```
+
+Substitute your own IPs and key paths. Verify — neither should prompt for a
+password:
+
+```bash
+ssh cp-node2 'hostname'
+ssh cp-node3 'hostname'
 ```
 
 The user needs passwordless `sudo` (required by `ansible_become: true`).
@@ -455,7 +489,41 @@ sudo cp /opt/confluent-platform-lab/kerberos/kadm5.acl.example \
 sudo sed -i 's/LAB\.LOCAL/<YOUR_REALM>/g' /var/kerberos/krb5kdc/{kdc.conf,kadm5.acl}
 ```
 
-**6b. Create the database and start the services:**
+**6b. Tell the host which realm it serves.** `kdc.conf` configures the
+database; it does **not** tell the daemons what realm they belong to. They read
+that from `/etc/krb5.conf`, which on a stock RHEL 9 install has no
+`default_realm`. Skip this and both services fail to start with
+`Configuration file does not specify default realm`:
+
+```bash
+sudo tee /etc/krb5.conf.d/lab-realm.conf <<'EOF'
+[libdefaults]
+    default_realm = LAB.LOCAL
+
+[realms]
+    LAB.LOCAL = {
+        kdc = cp-node1.lab.local:88
+        admin_server = cp-node1.lab.local:749
+        default_domain = lab.local
+    }
+
+[domain_realm]
+    .lab.local = LAB.LOCAL
+    lab.local = LAB.LOCAL
+EOF
+```
+
+This relies on the `includedir /etc/krb5.conf.d/` line in the stock
+`/etc/krb5.conf` (`grep -n includedir /etc/krb5.conf` to confirm). If it is not
+there, put the same content at the top of `/etc/krb5.conf` instead.
+
+> Only the KDC host needs this, and only until Step 10: cp-ansible's `kerberos`
+> role writes a full `/etc/krb5.conf` on **every** node, derived from the
+> `kerberos:` block in `hosts.yml`. Its template carries no `includedir`, so
+> this drop-in stops being read after the deploy — by which point the realm is
+> in the main file anyway. The values match, so the two never conflict.
+
+**6c. Create the database and start the services:**
 
 ```bash
 sudo kdb5_util create -s -r LAB.LOCAL     # prompts for a master password; keep it
@@ -463,15 +531,30 @@ sudo systemctl enable --now krb5kdc kadmin
 sudo systemctl is-active krb5kdc kadmin
 ```
 
-**6c. Open the port** so the other nodes can reach the KDC:
+**6d. Open the port** so the other nodes can reach the KDC:
 
 ```bash
 sudo firewall-cmd --add-port=88/tcp --permanent && sudo firewall-cmd --reload
-# verify from another node:
+```
+
+> **`firewall-cmd: command not found`?** Many cloud images ship without
+> firewalld — there is then no host firewall to open, and filtering happens in
+> the provider's own layer (AWS security groups, OCI security lists, Azure
+> NSGs), which you have to open there instead. Confirm nothing is filtering
+> locally before assuming that:
+>
+> ```bash
+> sudo systemctl is-active firewalld; sudo nft list ruleset 2>/dev/null | head
+> ```
+
+Verify from another node — this is the check that actually matters, whichever
+firewall you have:
+
+```bash
 ssh cp-node2 'timeout 3 bash -c "</dev/tcp/cp-node1/88" && echo "KDC reachable"'
 ```
 
-**6d. Create principals and keytabs.** One service principal per node, written
+**6e. Create principals and keytabs.** One service principal per node, written
 into **two** keytab files:
 
 ```bash
@@ -486,7 +569,7 @@ sudo chown $USER:$USER pki/keytabs/*.keytab
 chmod 640 pki/keytabs/*.keytab
 ```
 
-**6e. Verify:**
+**6f. Verify:**
 
 ```bash
 klist -kt pki/keytabs/cp-node1-kafka_broker.keytab
