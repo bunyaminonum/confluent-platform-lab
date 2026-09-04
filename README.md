@@ -236,6 +236,24 @@ sudo systemctl enable --now chronyd
 chronyc tracking | grep "System time"
 ```
 
+**1e. Python on every node.** `hosts.yml` sets
+`ansible_python_interpreter: /usr/bin/python3.11`, so that interpreter must
+exist on all three — and it needs PyYAML, because several cp-ansible tasks
+parse the log4j2 YAML config **on the target**:
+
+```bash
+sudo dnf install -y python3.11 python3.11-pyyaml
+```
+
+Miss this and the run gets deep into the controller role before stopping with:
+
+```
+The python PyYAML module is required on Target nodes. Install it with 'pip install PyYAML'
+```
+
+The control node usually hides the problem — installing Ansible there pulls
+PyYAML in as a dependency, so the failure appears only on the other nodes.
+
 ### Step 2 — Control node preparation
 
 The control node may be one of the three cluster nodes (`cp-node1` here).
@@ -243,8 +261,75 @@ The control node may be one of the three cluster nodes (`cp-node1` here).
 **2a. Ansible and Python:**
 
 ```bash
-sudo dnf install -y ansible-core python3.11 python3.11-pip git podman
+sudo dnf install -y python3.11 python3.11-pip git podman
 ```
+
+**Do not install `ansible-core` from `dnf`.** RHEL 9's AppStream ships
+**2.14**, and cp-ansible 8.3 declares `requires_ansible: '>=2.16.0'`. The
+collection still installs, then warns and misbehaves at runtime:
+
+```
+[WARNING]: Collection confluent.platform does not support Ansible version 2.14.18
+```
+
+```bash
+sudo dnf remove -y ansible-core                        # if it is already installed
+sudo python3.11 -m pip install 'ansible==11.*'
+hash -r; ansible --version | head -2
+```
+
+Install the full **`ansible`** package, not bare `ansible-core`, and pin the
+11.x series. That one choice avoids three separate failures:
+
+- **Too old.** RHEL 9's `ansible-core` is 2.14; the playbooks stop with
+  `"You must update Ansible to at least 2.16 to use these playbooks."`
+- **Too new.** 2.19 rewrote the templating engine and cp-ansible 8.3's
+  listener setup breaks on it — `combine` fails with
+  `expected dicts but got a '_AnsibleTaggedStr' and a '_AnsibleLazyTemplateDict'`.
+  `ansible` 11.x pins `ansible-core` 2.18, which is the version this
+  repository was deployed and verified with. (`ansible` 12.x brings 2.19 —
+  avoid it.)
+- **Missing collections.** cp-ansible calls the `alternatives` module without
+  a namespace, which `ansible-core` redirects to `community.general` — a
+  collection its manifest never declares (it lists only `ansible.posix`). With
+  bare `ansible-core` the run dies at *Custom Java Install* with
+  `couldn't resolve module/action 'alternatives'`. The full package bundles it.
+
+If you must stay on bare `ansible-core`, install the missing collection
+yourself: `ansible-galaxy collection install community.general`.
+
+This lands in `/usr/local/bin`, which precedes `/usr/bin` on the default
+`PATH`. Remove the RPM rather than layering pip on top of it — with both
+present the old binary can win, and cp-ansible then stops with a hard
+assertion, not a warning:
+
+```
+"You must update Ansible to at least 2.16 to use these playbooks."
+```
+
+The collection itself lives in `~/.ansible/collections` and survives the
+swap; confirm with `ansible-galaxy collection list | grep confluent.platform`.
+
+`podman-compose` is a separate matter: it is **not** in the RHEL 9 base or
+AppStream repositories (it lives in EPEL), so install it with pip. Step 7 needs
+it to bring up the LDAP container:
+
+```bash
+python3.11 -m pip install --user podman-compose
+podman-compose --version
+```
+
+`pip3` on its own will not exist: `python3.11-pip` installs `pip3.11`, not
+`pip3`. Calling pip as a module of the interpreter you want avoids guessing.
+
+If the command is not found, `~/.local/bin` is not on your `PATH`:
+
+```bash
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc && source ~/.bashrc
+```
+
+> `docker compose` works too if you have it — the compose file is portable. Only
+> the command name differs.
 
 **2b. The cp-ansible collection:**
 
