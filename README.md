@@ -621,19 +621,45 @@ podman exec openldap ldapadd -x -H ldap://localhost:389 \
   -D "cn=admin,dc=lab,dc=local" -w "<LDAP_ADMIN_PW>" -f /tmp/bootstrap.ldif
 ```
 
-**7c. Generate and assign passwords:**
+**7c. Grant the bind account read access.** `osixia/openldap` ships an ACL that
+lets **only** `cn=admin` read the tree, so `cn=ldap-bind-user` can bind but every
+search it runs comes back `No such object (32)`. Apply
+[`ldap/acl.ldif`](ldap/acl.ldif), which grants the bind account read on
+`ou=users` and `ou=groups` (password hashes stay unreadable):
+
+```bash
+podman cp ldap/acl.ldif openldap:/tmp/
+podman exec openldap ldapmodify -H ldapi:/// -Y EXTERNAL -f /tmp/acl.ldif
+```
+
+> Skipping this step does not fail loudly. The brokers start, then hang at
+> `Waiting for all of the authorizer futures to be completed` until
+> `confluent.authorizer.init.timeout.ms` (10 min) expires and startup aborts.
+> Port 8090 never opens and cp-ansible fails on **Get Authorization Token from
+> MDS** after 30 retries. Edit the base DN in `acl.ldif` if you changed
+> `cp_ldap_base`.
+
+**7d. Generate and assign passwords:**
 
 ```bash
 ./ldap/set-passwords.sh "<LDAP_ADMIN_PW>"
 cat ldap/generated-passwords.txt
 ```
 
-**7d. Verify** that an account can actually bind:
+**7e. Verify** that the bind account can bind *and search*:
 
 ```bash
 podman exec openldap ldapwhoami -x -H ldap://localhost:389 \
   -D "uid=mds,ou=users,dc=lab,dc=local" -w '<MDS_PASSWORD>'
 # expected: dn:uid=mds,ou=users,dc=lab,dc=local
+
+# A successful bind proves nothing about read access - search as the bind
+# account too, exactly as MDS does when it resolves group membership:
+podman exec openldap ldapsearch -x -LLL -H ldap://localhost:389 \
+  -D "cn=ldap-bind-user,dc=lab,dc=local" -w '<BIND_PASSWORD>' \
+  -b "ou=groups,dc=lab,dc=local" "(objectClass=groupOfNames)" cn
+# expected: dn: cn=kafka-developers,ou=groups,dc=lab,dc=local
+# "No such object (32)" here means step 7c was skipped.
 ```
 
 > Run LDAP commands **from inside the container**. Under rootless podman the
