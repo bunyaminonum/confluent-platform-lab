@@ -909,6 +909,10 @@ confluent iam rbac role-binding create --principal User:mds --role SystemAdmin \
 >
 > Next Gen has **no separate "Schema Registry" menu** — schemas live under
 > **Topics → topic → Schema**.
+>
+> A binding takes effect immediately, but a token issued **before** you created
+> it does not gain it. Log out and back in to Control Center — and fetch a fresh
+> token for any API call — before concluding that a binding did not work.
 
 ---
 
@@ -935,13 +939,45 @@ If you add a component later:
 ansible-playbook -i hosts.yml -e @vault.yml confluent.platform.control_center_next_gen
 ```
 
-To diagnose, query Control Center's own API rather than guessing from the UI:
+To diagnose, query Control Center's own API rather than guessing from the UI.
+That needs a bearer token. Both variables below are ordinary shell variables
+that do not survive a new terminal, and `ansible-vault` has to run from
+`ansible/`, where `ansible.cfg` points it at the vault password file:
+
+```bash
+cd /opt/confluent-platform-lab/ansible
+export MDS_PW=$(ansible-vault view vault.yml | awk -F'"' '/vault_mds_super_user_password/{print $2}')
+export TOKEN=$(curl -sk -u "mds:$MDS_PW" https://cp-node1:8090/security/1.0/authenticate \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)['auth_token'])")
+```
+
+A `KeyError: 'auth_token'` here means the authenticate call failed, not that the
+parsing did — nearly always because `$MDS_PW` was empty and MDS answered 401.
+Check `echo ${#MDS_PW}` before looking anywhere else. Every request made with
+the resulting empty token then fails with `401 ... Token is not present`, which
+names the symptom rather than the cause.
 
 ```bash
 curl -sk -H "Authorization: Bearer $TOKEN" https://cp-node3:9021/2.0/clusters/connect
 ```
 
-An empty `[]` means C3 does not know about that component.
+**An empty `[]` is not by itself evidence of the configuration problem described
+here.** The same endpoint returns `[]` whenever the *querying principal* has no
+role binding at that scope — by far the more common cause. Tell the two apart
+before redeploying anything:
+
+- `[]` from **every** component, `/2.0/clusters/kafka` included, while
+  `confluent cluster list` shows the clusters registered → the bindings are
+  missing, not the configuration. Go to §5.
+- `[]` from **one** component while the others return data → that component
+  really is absent from C3's configuration. Confirm it in the file itself:
+
+```bash
+ssh cp-node3 'sudo grep -c controlcenter.connect /opt/confluent/etc/confluent-control-center/control-center-production.properties'
+```
+
+A count of `0` confirms the diagnosis and the redeploy above is the fix; a
+non-zero count sends you back to the role bindings.
 
 ### Leaving `<component>_cluster_name` empty hides the component
 
