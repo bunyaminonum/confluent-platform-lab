@@ -875,6 +875,11 @@ The response must carry a real `partition_id` and `offset`.
 
 ## 5. UI access and RBAC
 
+> This section covers the bindings needed to get the UI and the deployed
+> components working. For RBAC itself — the model, service account design, how
+> to avoid a binding per topic, and a step-by-step walkthrough of running a
+> connector under its own identity — see **[`security/rbac.md`](security/rbac.md)**.
+
 Control Center: `https://cp-node3:9021`
 
 If you log in and see **"All clusters (0)"**, that is not a bug — it is a
@@ -882,11 +887,25 @@ missing role binding. The MDS endpoint that populates Control Center's cluster
 list consults **role bindings only**; membership in `super.users` grants
 unlimited real access but is invisible to that lookup.
 
+Every `confluent iam` command below goes through the MDS, so the CLI has to be
+logged in first. MDS tokens live one hour
+(`confluent.metadata.server.token.max.lifetime.ms`); after that the session
+lapses and every command fails with `Error: not logged in`, which reads like a
+permission problem but is only an expiry. `--save` stores the credentials so
+renewing is a single command:
+
+```bash
+cd /opt/confluent-platform-lab/ansible
+export MDS_PW=$(ansible-vault view vault.yml | awk -F'"' '/vault_mds_super_user_password/{print $2}')
+export CONFLUENT_PLATFORM_USERNAME=mds CONFLUENT_PLATFORM_PASSWORD="$MDS_PW"
+confluent login --url https://cp-node1:8090 --certificate-authority-path ../pki/ca/ca.crt --save
+export CID=$(confluent cluster list -o json \
+  | python3 -c "import sys,json;print(json.load(sys.stdin)[0]['scope']['clusters']['kafka-cluster'])")
+```
+
 Grant an explicit binding to every identity that will use the UI:
 
 ```bash
-CID=<kafka-cluster-id>
-
 # Kafka cluster scope
 confluent iam rbac role-binding create --principal User:mds \
   --role SystemAdmin --kafka-cluster "$CID"
@@ -913,6 +932,97 @@ confluent iam rbac role-binding create --principal User:mds --role SystemAdmin \
 > A binding takes effect immediately, but a token issued **before** you created
 > it does not gain it. Log out and back in to Control Center — and fetch a fresh
 > token for any API call — before concluding that a binding did not work.
+
+### Connector and client role bindings
+
+The bindings above make clusters *visible*. They grant no access to data, and
+that is a separate, deliberate layer. Confluent splits RBAC for Connect into two
+principal tiers, and cp-ansible creates only the first:
+
+| Tier | Principal | Covers | Created by cp-ansible |
+|---|---|---|---|
+| Infrastructure | `svc-kafka-connect` | internal topics (`connect-cluster-configs`, `-offsets`, `-statuses`), the worker group, `SecurityAdmin` for MDS authorization calls | yes |
+| Data | whichever principal the connector runs as | data topics, Schema Registry subjects, sink consumer groups | **no** |
+
+Everything a connector actually touches lives in the second tier. Omitting it
+produces three different failures, in this order, each looking unrelated to the
+last:
+
+| Symptom | Layer | Fix |
+|---|---|---|
+| `RestClientException: Unauthorized; error code: 401` from the converter | authentication to Schema Registry | converter credentials — already set in `kafka_connect_custom_properties`, see [`ansible/hosts.yml`](ansible/hosts.yml) |
+| `User is denied operation Write on Subject: <topic>-value` (403) | Schema Registry authorization | `Subject:` binding below |
+| `TopicAuthorizationException: Not authorized to access topics: [...]` | Kafka authorization | `Topic:` and `Cluster:` bindings below |
+
+In all three the connector reports `RUNNING` while its **task** is `FAILED`.
+Read the task state; the connector state says nothing useful here:
+
+```bash
+curl -sk -u mds:$MDS_PW https://cp-node1:8083/connectors/<name>/status | python3 -m json.tool
+```
+
+**Bind by prefix, not by topic.** A binding per topic does not scale and is not
+how Confluent intends this to be used. Adopt a topic naming convention first,
+then grant once against that prefix — every future topic under it is covered
+without a new binding. This repository uses `connect-` for connector-produced
+topics; substitute your own convention, but choose it before the first binding,
+because changing it later means revisiting every one of them.
+
+```bash
+# data topics
+confluent iam rbac role-binding create --principal User:svc-kafka-connect \
+  --role DeveloperWrite --kafka-cluster "$CID" --resource Topic:connect- --prefix
+
+# cluster-scoped write, required because Connect's producer is idempotent
+confluent iam rbac role-binding create --principal User:svc-kafka-connect \
+  --role DeveloperWrite --kafka-cluster "$CID" --resource Cluster:kafka-cluster
+
+# schemas — the subject is <topic>-value, so the same prefix matches
+confluent iam rbac role-binding create --principal User:svc-kafka-connect \
+  --role DeveloperWrite --kafka-cluster "$CID" \
+  --schema-registry-cluster schema-registry --resource Subject:connect- --prefix
+
+# sink connectors' consumer groups
+confluent iam rbac role-binding create --principal User:svc-kafka-connect \
+  --role DeveloperRead --kafka-cluster "$CID" --resource Group:connect- --prefix
+```
+
+> The second command is easy to skip and hard to diagnose. Connect enables the
+> idempotent producer by default, and idempotent writes are authorized at
+> **cluster** scope, not topic scope — so a correct `Topic:` binding on its own
+> still fails.
+
+**Pick the narrowest role that works.** `DeveloperWrite` grants write and
+describe but not read; `ResourceOwner` adds read, delete and the right to grant
+access to others. Start with `DeveloperWrite` and escalate only where a real
+operation is refused. Never use `SystemAdmin` for data access — it is a
+cluster-scoped administrative role and grants far more than any connector needs.
+
+**Give each connector its own service account.** The bindings above attach to
+the worker's principal, which means every connector on the cluster inherits the
+same reach: a connector scoped to `connect-orders` can equally write
+`connect-payments`. [`ansible/hosts.yml`](ansible/hosts.yml) sets
+`connector.client.config.override.policy: All` so each connector can instead
+carry its own identity, and the bindings are then made against that principal
+rather than `svc-kafka-connect`:
+
+```json
+{
+  "name": "orders-source",
+  "topic": "connect-orders",
+  "producer.override.sasl.jaas.config": "org.apache.kafka.common.security.oauthbearer.OAuthBearerLoginModule required username=\"svc-orders\" password=\"<password>\" metadataServerUrls=\"https://cp-node1:8090,https://cp-node2:8090,https://cp-node3:8090\";",
+  "value.converter.schema.registry.basic.auth.user.info": "svc-orders:<password>"
+}
+```
+
+Both overrides are needed: the first is the Kafka producer's identity, the
+second the converter's identity towards Schema Registry. Setting only one
+leaves the other running as the worker.
+
+> Binding roles to LDAP groups rather than individual principals works for
+> authorization and is the right approach for human users. It is **not**
+> interchangeable for service accounts — see "Roles granted through a group may
+> not show up in the UI" in §6 before relying on it.
 
 ---
 
@@ -1186,6 +1296,8 @@ Deliberately not included:
 │   ├── .env.example
 │   ├── prometheus/  grafana/  nginx/
 ├── monitoring/                     # OPTIONAL JMX exporters -> Prometheus -> Grafana
+├── security/
+│   └── rbac.md                     # RBAC model, service account design, walkthrough
 ├── testing/                        # per-component accessibility / functional / resilience tests
 └── secrets/                        # OPTIONAL secret-management add-ons
     ├── README.md
